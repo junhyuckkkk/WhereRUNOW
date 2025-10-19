@@ -1,0 +1,481 @@
+// LocationShare SwiftUI with Kakao Map WebView
+// Swift 5.9+ / iOS 17+
+
+import SwiftUI
+import CoreLocation
+import WebKit
+
+// MARK: - Location Manager
+class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    
+    @Published var location: CLLocationCoordinate2D?
+    @Published var authorizationStatus: CLAuthorizationStatus?
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = kCLDistanceFilterNone
+        authorizationStatus = manager.authorizationStatus
+    }
+    
+    func requestLocation() {
+        isLoading = true
+        errorMessage = nil
+        
+        let status = manager.authorizationStatus
+        
+        if status == .notDetermined {
+            manager.requestWhenInUseAuthorization()
+        } else if status == .authorizedWhenInUse || status == .authorizedAlways {
+            manager.requestLocation()
+        } else {
+            isLoading = false
+            errorMessage = "위치 권한이 필요합니다. 설정에서 권한을 허용해주세요."
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        isLoading = false
+        if let location = locations.first {
+            DispatchQueue.main.async {
+                self.location = location.coordinate
+            }
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        isLoading = false
+        errorMessage = "위치를 가져올 수 없습니다. 시뮬레이터의 경우 Features > Location에서 위치를 설정해주세요."
+        print("Location error: \(error.localizedDescription)")
+    }
+    
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorizationStatus = manager.authorizationStatus
+        
+        if manager.authorizationStatus == .authorizedWhenInUse ||
+           manager.authorizationStatus == .authorizedAlways {
+            manager.requestLocation()
+        }
+    }
+}
+
+// MARK: - Kakao Map WebView
+struct KakaoMapView: UIViewRepresentable {
+    let latitude: Double
+    let longitude: Double
+    let appKey: String
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = true
+        
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences = preferences
+        
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.scrollView.isScrollEnabled = true
+        webView.scrollView.bounces = false
+        return webView
+    }
+    
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        let htmlString = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=\(appKey)"></script>
+            <style>
+                * { margin: 0; padding: 0; }
+                html, body { width: 100%; height: 100%; overflow: hidden; }
+                #map { width: 100%; height: 100%; }
+            </style>
+        </head>
+        <body>
+            <div id="map"></div>
+            <script>
+                var container = document.getElementById('map');
+                var options = {
+                    center: new kakao.maps.LatLng(\(latitude), \(longitude)),
+                    level: 3
+                };
+                
+                var map = new kakao.maps.Map(container, options);
+                
+                // 마커 이미지 (파란색 원)
+                var markerPosition = new kakao.maps.LatLng(\(latitude), \(longitude));
+                
+                // 커스텀 마커
+                var content = '<div style="position: relative;">' +
+                    '<div style="width: 30px; height: 30px; background-color: #4285F4; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>' +
+                    '</div>';
+                
+                var customOverlay = new kakao.maps.CustomOverlay({
+                    position: markerPosition,
+                    content: content,
+                    yAnchor: 0.5
+                });
+                
+                customOverlay.setMap(map);
+                
+                // 줌 컨트롤 추가
+                var zoomControl = new kakao.maps.ZoomControl();
+                map.addControl(zoomControl, kakao.maps.ControlPosition.RIGHT);
+            </script>
+        </body>
+        </html>
+        """
+        
+        webView.loadHTMLString(htmlString, baseURL: nil)
+    }
+}
+
+// MARK: - Content View
+struct ContentView: View {
+    @StateObject private var locationManager = LocationManager()
+    @State private var isSharing = false
+    @State private var shareText: String? = nil
+    @State private var address: String = ""
+    @State private var showCopied = false
+    @State private var isLoadingAddress = false
+    
+    // ⚠️ 여기에 발급받은 JavaScript 키를 입력하세요!
+    private let kakaoAppKey = "348a0a29e51e5ea4228395e6ccbc3d27"
+    
+    var body: some View {
+        ZStack {
+            // 그라디언트 배경
+            LinearGradient(
+                colors: [Color.yellow.opacity(0.8), Color.orange.opacity(0.6)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            
+            ScrollView {
+                VStack(spacing: 24) {
+                    // 타이틀 영역
+                    VStack(spacing: 12) {
+                        Image(systemName: "location.circle.fill")
+                            .font(.system(size: 60))
+                            .foregroundStyle(.white)
+                            .shadow(radius: 10)
+                        
+                        Text("위치 공유")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        Text("버튼을 눌러 현재 위치를 공유하세요")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.9))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 40)
+                    .padding(.horizontal)
+                    
+                    // 에러 메시지
+                    if let error = locationManager.errorMessage {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                            Text(error)
+                                .font(.subheadline)
+                        }
+                        .padding()
+                        .background(Color.red.opacity(0.8))
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                    }
+                    
+                    // 카드 영역
+                    VStack(spacing: 16) {
+                        if let loc = locationManager.location {
+                            // 카카오 지도 카드
+                            VStack(spacing: 0) {
+                                KakaoMapView(
+                                    latitude: loc.latitude,
+                                    longitude: loc.longitude,
+                                    appKey: kakaoAppKey
+                                )
+                                .frame(height: 250)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            }
+                            .background(Color(.systemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: .black.opacity(0.1), radius: 10)
+                            
+                            // 주소 정보 카드
+                            VStack(alignment: .leading, spacing: 16) {
+                                // 도로명 주소
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: "mappin.circle.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.orange)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("주소")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        if isLoadingAddress {
+                                            HStack(spacing: 8) {
+                                                ProgressView()
+                                                    .scaleEffect(0.8)
+                                                Text("주소 찾는 중...")
+                                                    .font(.body)
+                                            }
+                                        } else if !address.isEmpty {
+                                            Text(address)
+                                                .font(.body)
+                                                .lineLimit(3)
+                                        } else {
+                                            Text("주소를 가져올 수 없습니다")
+                                                .font(.body)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                                
+                                Divider()
+                                
+                                // 좌표 정보
+                                DisclosureGroup {
+                                    VStack(spacing: 12) {
+                                        HStack {
+                                            Image(systemName: "location.fill")
+                                                .foregroundColor(.blue)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("위도")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                Text(String(format: "%.6f", loc.latitude))
+                                                    .font(.system(.body, design: .monospaced))
+                                            }
+                                            Spacer()
+                                        }
+                                        
+                                        HStack {
+                                            Image(systemName: "location.fill")
+                                                .foregroundColor(.orange)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("경도")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                Text(String(format: "%.6f", loc.longitude))
+                                                    .font(.system(.body, design: .monospaced))
+                                            }
+                                            Spacer()
+                                        }
+                                    }
+                                    .padding(.top, 8)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "info.circle")
+                                            .foregroundColor(.blue)
+                                        Text("상세 좌표")
+                                            .font(.subheadline)
+                                    }
+                                }
+                            }
+                            .padding()
+                            .background(Color(.systemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: .black.opacity(0.1), radius: 10)
+                            
+                            // 공유 버튼
+                            Button(action: shareLocation) {
+                                HStack {
+                                    Image(systemName: showCopied ? "checkmark" : "square.and.arrow.up")
+                                    Text(showCopied ? "복사 완료!" : "위치 공유하기")
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color.orange, Color.yellow],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .foregroundColor(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .shadow(radius: 5)
+                            }
+                            
+                            // 다시 가져오기 버튼
+                            Button(action: resetLocation) {
+                                Text("다시 가져오기")
+                                    .fontWeight(.medium)
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(Color.white.opacity(0.3))
+                                    .foregroundColor(.white)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                            
+                        } else {
+                            // 위치 가져오기 버튼
+                            Button(action: requestLocation) {
+                                HStack {
+                                    if locationManager.isLoading {
+                                        ProgressView()
+                                            .tint(.orange)
+                                        Text("위치 가져오는 중...")
+                                            .fontWeight(.semibold)
+                                    } else {
+                                        Image(systemName: "location.fill")
+                                        Text("내 위치 가져오기")
+                                            .fontWeight(.semibold)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.white)
+                                .foregroundColor(.orange)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .shadow(radius: 10)
+                            }
+                            .disabled(locationManager.isLoading)
+                        }
+                        
+                        HStack(spacing: 4) {
+                            Image(systemName: "map.fill")
+                                .font(.caption)
+                            Text("카카오맵 사용 중")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.white.opacity(0.7))
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 40)
+                }
+            }
+        }
+        .sheet(isPresented: $isSharing) {
+            if let shareText = shareText {
+                ShareSheet(activityItems: [shareText])
+            }
+        }
+        .onReceive(locationManager.$location) { newLocation in
+            if let coord = newLocation {
+                fetchAddress(for: coord)
+            }
+        }
+    }
+    
+    func requestLocation() {
+        locationManager.requestLocation()
+    }
+    
+    func fetchAddress(for coordinate: CLLocationCoordinate2D) {
+        isLoadingAddress = true
+        let geocoder = CLGeocoder()
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        
+        geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "ko_KR")) { placemarks, error in
+            isLoadingAddress = false
+            
+            if let error = error {
+                address = "주소를 찾을 수 없습니다"
+                print("Geocoding error: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let placemark = placemarks?.first else {
+                address = "주소를 찾을 수 없습니다"
+                return
+            }
+            
+            var addressComponents: [String] = []
+            
+            if let administrativeArea = placemark.administrativeArea {
+                addressComponents.append(administrativeArea)
+            }
+            
+            if let locality = placemark.locality {
+                addressComponents.append(locality)
+            }
+            
+            if let subLocality = placemark.subLocality {
+                addressComponents.append(subLocality)
+            }
+            
+            if let thoroughfare = placemark.thoroughfare {
+                addressComponents.append(thoroughfare)
+            }
+            
+            if let subThoroughfare = placemark.subThoroughfare {
+                addressComponents.append(subThoroughfare)
+            }
+            
+            if addressComponents.isEmpty, let name = placemark.name {
+                address = name
+            } else {
+                address = addressComponents.joined(separator: " ")
+            }
+        }
+    }
+    
+    func resetLocation() {
+        withAnimation {
+            locationManager.location = nil
+            address = ""
+            showCopied = false
+            isLoadingAddress = false
+            locationManager.errorMessage = nil
+        }
+    }
+    
+    func shareLocation() {
+        guard let loc = locationManager.location else { return }
+        shareText = ShareFormatter.shareText(for: loc, address: address)
+        
+        UIPasteboard.general.string = shareText
+        
+        withAnimation {
+            showCopied = true
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation {
+                showCopied = false
+            }
+        }
+        
+        isSharing = true
+    }
+}
+
+// MARK: - ShareSheet
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Formatter
+enum ShareFormatter {
+    static func shareText(for c: CLLocationCoordinate2D, address: String) -> String {
+        let addressText = address.isEmpty ? "위치를 찾을 수 없습니다" : address
+        
+        return """
+        📍 지금 여기예요!
+        
+        \(addressText)
+        """
+    }
+}
+
+// MARK: - Preview
+#Preview("위치 공유 앱") {
+    ContentView()
+}
