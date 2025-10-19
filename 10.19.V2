@@ -1,0 +1,279 @@
+// LocationShare SwiftUI with Kakao Map WebView
+// Swift 5.9+ / iOS 17+
+
+import SwiftUI
+import CoreLocation
+import WebKit
+
+// MARK: - Location Manager
+class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    
+    @Published var location: CLLocationCoordinate2D?
+    @Published var authorizationStatus: CLAuthorizationStatus?
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = kCLDistanceFilterNone
+        authorizationStatus = manager.authorizationStatus
+    }
+    
+    func requestLocation() {
+        isLoading = true
+        errorMessage = nil
+        
+        let status = manager.authorizationStatus
+        
+        if status == .notDetermined {
+            manager.requestWhenInUseAuthorization()
+        } else if status == .authorizedWhenInUse || status == .authorizedAlways {
+            manager.startUpdatingLocation()
+        } else {
+            isLoading = false
+            errorMessage = "위치 권한이 필요합니다. 설정에서 권한을 허용해주세요."
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        isLoading = false
+        if let location = locations.first {
+            DispatchQueue.main.async {
+                self.location = location.coordinate
+                self.manager.stopUpdatingLocation()
+            }
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        isLoading = false
+        errorMessage = "위치를 가져올 수 없습니다. 시뮬레이터의 경우 Features > Location에서 위치를 설정해주세요."
+        print("Location error: \(error.localizedDescription)")
+    }
+    
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorizationStatus = manager.authorizationStatus
+        // 자동으로 위치 가져오기 제거 - 버튼 클릭 시에만 가져오기
+    }
+}
+
+// MARK: - Kakao Map WebView
+struct KakaoMapView: UIViewRepresentable {
+    let latitude: Double
+    let longitude: Double
+    let appKey: String
+    
+    func makeUIView(context: Context) -> WKWebView {
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = true
+        
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences = preferences
+        configuration.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.scrollView.isScrollEnabled = true
+        webView.scrollView.bounces = false
+        
+        return webView
+    }
+    
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        let htmlString = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=\(appKey)"></script>
+            <style>
+                * { margin: 0; padding: 0; }
+                html, body { width: 100%; height: 100%; overflow: hidden; }
+                #map { width: 100%; height: 100%; }
+            </style>
+        </head>
+        <body>
+            <div id="map"></div>
+            <script>
+                var container = document.getElementById('map');
+                var options = {
+                    center: new kakao.maps.LatLng(\(latitude), \(longitude)),
+                    level: 3
+                };
+                var map = new kakao.maps.Map(container, options);
+                
+                var markerPosition = new kakao.maps.LatLng(\(latitude), \(longitude));
+                var content = '<div style="position: relative;"><div style="width: 30px; height: 30px; background-color: #4285F4; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div></div>';
+                var customOverlay = new kakao.maps.CustomOverlay({
+                    position: markerPosition,
+                    content: content,
+                    yAnchor: 0.5
+                });
+                customOverlay.setMap(map);
+                
+                var zoomControl = new kakao.maps.ZoomControl();
+                map.addControl(zoomControl, kakao.maps.ControlPosition.RIGHT);
+            </script>
+        </body>
+        </html>
+        """
+        
+        webView.loadHTMLString(htmlString, baseURL: nil)
+    }
+}
+
+// MARK: - Content View
+struct ContentView: View {
+    // MARK: - State Variables
+    @StateObject private var locationManager = LocationManager()
+    
+    // MARK: - Constants
+    private let kakaoAppKey = "348a0a29e51e5ea4228395e6ccbc3d27"
+    
+    // MARK: - Body
+    var body: some View {
+        ZStack {
+            // MARK: - 배경
+            LinearGradient(
+                colors: [Color.yellow.opacity(0.8), Color.orange.opacity(0.6)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            
+            ScrollView {
+                VStack(spacing: 24) {
+                    
+                    // MARK: - 1. 타이틀 영역
+                    VStack(spacing: 12) {
+                        Image(systemName: "location.circle.fill")
+                            .font(.system(size: 60))
+                            .foregroundStyle(.white)
+                            .shadow(radius: 10)
+                        
+                        Text("위치 공유")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        Text("버튼을 눌러 현재 위치를 공유하세요")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.9))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 40)
+                    .padding(.horizontal)
+                    
+                    // MARK: - 2. 에러 메시지
+                    if let error = locationManager.errorMessage {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                            Text(error)
+                                .font(.subheadline)
+                        }
+                        .padding()
+                        .background(Color.red.opacity(0.8))
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                    }
+                    
+                    // MARK: - 3. 메인 컨텐츠 영역
+                    VStack(spacing: 16) {
+                        
+                        // MARK: - 3-1. 위치 가져오기 전 (첫 화면)
+                        if locationManager.location == nil {
+                            Button(action: requestLocation) {
+                                HStack {
+                                    if locationManager.isLoading {
+                                        ProgressView()
+                                            .tint(.orange)
+                                        Text("위치 가져오는 중...")
+                                            .fontWeight(.semibold)
+                                    } else {
+                                        Image(systemName: "location.fill")
+                                        Text("내 위치 가져오기")
+                                            .fontWeight(.semibold)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.white)
+                                .foregroundColor(.orange)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .shadow(radius: 10)
+                            }
+                            .disabled(locationManager.isLoading)
+                        }
+                        
+                        // MARK: - 3-2. 위치 가져온 후
+                        if let loc = locationManager.location {
+                            
+                            // MARK: - 3-2-1. 카카오 지도
+                            VStack(spacing: 0) {
+                                KakaoMapView(
+                                    latitude: loc.latitude,
+                                    longitude: loc.longitude,
+                                    appKey: kakaoAppKey
+                                )
+                                .frame(height: 400)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            }
+                            .background(Color(.systemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: .black.opacity(0.1), radius: 10)
+                            .transition(.scale.combined(with: .opacity))
+                            
+                            // MARK: - 3-2-2. 다시 가져오기 버튼
+                            Button(action: resetLocation) {
+                                Text("다시 가져오기")
+                                    .fontWeight(.medium)
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(Color.white.opacity(0.3))
+                                    .foregroundColor(.white)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                        }
+                        
+                        // MARK: - 3-3. 하단 라벨
+                        HStack(spacing: 4) {
+                            Image(systemName: "map.fill")
+                                .font(.caption)
+                            Text("카카오맵 사용 중")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.white.opacity(0.7))
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 40)
+                }
+            }
+        }
+        .onReceive(locationManager.$location) { _ in
+            // 위치 업데이트 감지 (필요시 추가 동작)
+        }
+    }
+    
+    // MARK: - Functions
+    
+    /// 위치 가져오기 요청
+    func requestLocation() {
+        locationManager.requestLocation()
+    }
+    
+    /// 위치 정보 초기화
+    func resetLocation() {
+        withAnimation {
+            locationManager.location = nil
+            locationManager.errorMessage = nil
+        }
+    }
+}
+
+// MARK: - Preview
+#Preview("위치 공유 앱") {
+    ContentView()
+}
